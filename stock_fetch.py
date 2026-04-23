@@ -132,6 +132,47 @@ def parse_tencent_payload(raw: str) -> list[dict]:
     return results
 
 
+def parse_eastmoney_stock_payload(payload: dict) -> dict | None:
+    data = payload.get("data") or {}
+    code = str(data.get("f57") or "").strip()
+    name = str(data.get("f58") or "-").strip() or "-"
+    if not code:
+        return None
+
+    converted = to_a_share_symbols(code)
+    if not converted:
+        return None
+    api_symbol, display_symbol = converted
+
+    raw_price = data.get("f43")
+    raw_change_pct = data.get("f170")
+    currency_code = data.get("f107")
+    timestamp = data.get("f86") or data.get("f85") or "-"
+
+    price = None
+    if isinstance(raw_price, (int, float)):
+        price = float(raw_price) / 100
+
+    change_pct = None
+    if isinstance(raw_change_pct, (int, float)):
+        change_pct = float(raw_change_pct) / 100
+
+    currency = "-"
+    if isinstance(currency_code, int):
+        currency_map = {1: "CNY", 2: "HKD", 3: "USD"}
+        currency = currency_map.get(currency_code, "-")
+
+    return {
+        "apiSymbol": api_symbol,
+        "symbol": display_symbol,
+        "shortName": name,
+        "regularMarketPrice": price,
+        "regularMarketChangePercent": change_pct,
+        "currency": currency,
+        "marketState": str(timestamp),
+    }
+
+
 def fetch_quotes_by_api_symbols(api_symbols: list[str], batch_size: int) -> list[dict]:
     def fetch_chunk(chunk: list[str]) -> list[dict]:
         url = f"{TENCENT_QUOTE_API}{','.join(chunk)}"
@@ -158,6 +199,57 @@ def fetch_quotes_by_api_symbols(api_symbols: list[str], batch_size: int) -> list
     for chunk in split_chunks(api_symbols, batch_size):
         all_results.extend(fetch_chunk(chunk))
     return all_results
+
+
+def fetch_eastmoney_quotes_for_api_symbols(api_symbols: list[str], batch_size: int) -> list[dict]:
+    # Eastmoney secid mapping: SH/BJ -> 1, SZ -> 0.
+    secids: list[str] = []
+    secid_to_api_symbol: dict[str, str] = {}
+    for api_symbol in api_symbols:
+        if api_symbol.startswith("sh"):
+            secid = f"1.{api_symbol[2:]}"
+        elif api_symbol.startswith(("sz", "bj")):
+            secid = f"0.{api_symbol[2:]}"
+        else:
+            continue
+        secids.append(secid)
+        secid_to_api_symbol[secid] = api_symbol
+
+    quotes: list[dict] = []
+    fields = "f57,f58,f43,f169,f170,f85,f86,f107"
+    for chunk in split_chunks(secids, batch_size):
+        secids_csv = ",".join(chunk)
+        url = f"https://push2.eastmoney.com/api/qt/ulist.np/get?secids={secids_csv}&fields={fields}"
+        alt_urls = [
+            f"{host}/api/qt/ulist.np/get?secids={secids_csv}&fields={fields}"
+            for host in EASTMONEY_HOSTS[1:]
+        ]
+        raw = fetch_url_text(
+            url,
+            alt_urls=alt_urls,
+            headers={
+                "User-Agent": "Mozilla/5.0",
+                "Referer": "https://quote.eastmoney.com/",
+            },
+            timeout=30,
+            encoding="utf-8",
+            retries=6,
+            retry_backoff_sec=1.2,
+        )
+        payload = json.loads(raw)
+        diff = (payload.get("data") or {}).get("diff") or []
+        for item in diff:
+            parsed = parse_eastmoney_stock_payload({"data": item})
+            if not parsed:
+                continue
+            api_symbol = parsed["apiSymbol"]
+            expected_api_symbol = secid_to_api_symbol.get(
+                f"{1 if api_symbol.startswith('sh') else 0}.{api_symbol[2:]}"
+            )
+            if expected_api_symbol and expected_api_symbol != api_symbol:
+                continue
+            quotes.append(parsed)
+    return quotes
 
 
 def fetch_quotes(symbols: list[str], batch_size: int) -> list[dict]:
@@ -348,6 +440,17 @@ def main() -> int:
             raw_quotes = fetch_quotes_by_api_symbols(api_symbols, args.batch_size)
 
             quote_map = {q["apiSymbol"]: q for q in raw_quotes}
+            missing_api_symbols = [s for s in api_symbols if s not in quote_map]
+            if missing_api_symbols:
+                print(
+                    f"腾讯接口缺失 {len(missing_api_symbols)} 只，正在使用东方财富补齐..."
+                )
+                em_quotes = fetch_eastmoney_quotes_for_api_symbols(
+                    missing_api_symbols, args.batch_size
+                )
+                for q in em_quotes:
+                    quote_map[q["apiSymbol"]] = q
+
             quotes: list[dict] = []
             for meta in metas:
                 quote = quote_map.get(meta["apiSymbol"])

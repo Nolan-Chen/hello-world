@@ -261,18 +261,42 @@ def fetch_quotes(symbols: list[str], batch_size: int) -> list[dict]:
     return results
 
 
-def fetch_all_a_share_meta(include_bj: bool) -> list[dict]:
+def _format_timestamp_from_epoch(value: object) -> str:
+    if not isinstance(value, (int, float)):
+        return "-"
+    try:
+        return dt.datetime.fromtimestamp(int(value)).strftime("%Y-%m-%d %H:%M:%S")
+    except (OverflowError, OSError, ValueError):
+        return "-"
+
+
+def _to_optional_float(value: object) -> float | None:
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped or stripped == "-":
+            return None
+        try:
+            return float(stripped)
+        except ValueError:
+            return None
+    return None
+
+
+def fetch_all_a_share_quotes(include_bj: bool) -> list[dict]:
     fs = "m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23"
     if include_bj:
         fs = f"{fs},m:0+t:81,m:1+t:81"
 
     page = 1
-    page_size = 500
-    metas: list[dict] = []
+    # Eastmoney clist endpoint currently caps one page at 100 rows.
+    page_size = 100
+    quotes: list[dict] = []
     seen_symbols: set[str] = set()
     total = None
 
-    while total is None or len(metas) < total:
+    while total is None or len(seen_symbols) < total:
         params = {
             "pn": str(page),
             "pz": str(page_size),
@@ -282,7 +306,7 @@ def fetch_all_a_share_meta(include_bj: bool) -> list[dict]:
             "invt": "2",
             "fid": "f3",
             "fs": fs,
-            "fields": "f12,f14",
+            "fields": "f12,f14,f2,f3,f124",
         }
         query = urllib.parse.urlencode(params)
         urls = [f"{host}/api/qt/clist/get?{query}" for host in EASTMONEY_HOSTS]
@@ -318,16 +342,21 @@ def fetch_all_a_share_meta(include_bj: bool) -> list[dict]:
             if api_symbol in seen_symbols:
                 continue
             seen_symbols.add(api_symbol)
-            metas.append(
+
+            quotes.append(
                 {
                     "apiSymbol": api_symbol,
                     "symbol": display_symbol,
                     "shortName": name,
+                    "regularMarketPrice": _to_optional_float(item.get("f2")),
+                    "regularMarketChangePercent": _to_optional_float(item.get("f3")),
+                    "currency": "CNY",
+                    "marketState": _format_timestamp_from_epoch(item.get("f124")),
                 }
             )
         page += 1
 
-    return metas
+    return quotes
 
 
 def write_csv(path: str, quotes: list[dict]) -> None:
@@ -429,40 +458,12 @@ def main() -> int:
 
     try:
         if args.all_a_share:
-            print("正在拉取全市场 A 股代码列表...")
-            metas = fetch_all_a_share_meta(include_bj=args.include_bj)
-            if not metas:
-                print("未拉取到 A 股代码列表。", file=sys.stderr)
+            print("正在拉取全市场 A 股行情...")
+            quotes = fetch_all_a_share_quotes(include_bj=args.include_bj)
+            if not quotes:
+                print("未拉取到 A 股行情。", file=sys.stderr)
                 return 1
-
-            api_symbols = [m["apiSymbol"] for m in metas]
-            print(f"共获取股票代码: {len(api_symbols)}，正在分批拉取行情...")
-            raw_quotes = fetch_quotes_by_api_symbols(api_symbols, args.batch_size)
-
-            quote_map = {q["apiSymbol"]: q for q in raw_quotes}
-            missing_api_symbols = [s for s in api_symbols if s not in quote_map]
-            if missing_api_symbols:
-                print(
-                    f"腾讯接口缺失 {len(missing_api_symbols)} 只，正在使用东方财富补齐..."
-                )
-                em_quotes = fetch_eastmoney_quotes_for_api_symbols(
-                    missing_api_symbols, args.batch_size
-                )
-                for q in em_quotes:
-                    quote_map[q["apiSymbol"]] = q
-
-            quotes: list[dict] = []
-            for meta in metas:
-                quote = quote_map.get(meta["apiSymbol"])
-                if not quote:
-                    continue
-                quote["symbol"] = meta["symbol"]
-                if quote.get("shortName") in ("", "-", None):
-                    quote["shortName"] = meta["shortName"]
-                quotes.append(quote)
-            missing = len(metas) - len(quotes)
-            if missing > 0:
-                print(f"提示: 有 {missing} 只股票暂未返回行情。")
+            print(f"已获取全市场 A 股行情数量: {len(quotes)}")
         else:
             symbols = [s.strip().upper() for s in args.symbols.split(",") if s.strip()]
             if not symbols:

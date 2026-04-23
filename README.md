@@ -35,6 +35,16 @@ pkg update -y && pkg install -y python git && git clone https://github.com/Nolan
 python stock_fetch.py --symbols 0700.HK,600519.SS,000001.SZ
 ```
 
+获取全市场 A 股（含北交所）：
+
+```bash
+python stock_fetch.py --all-a-share --include-bj --sample 20 --output-csv a_share_full_market.csv --output-json a_share_full_market.json
+```
+
+说明：
+- `--sample 20` 只在终端展示前 20 条，完整数据写入文件
+- `--output-csv` 与 `--output-json` 保存全量结果，方便后续分析
+
 ## 4. 成功输出示例
 
 脚本会输出：

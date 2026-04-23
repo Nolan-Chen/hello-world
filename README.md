@@ -23,6 +23,12 @@ cd hello-world
 python stock_fetch.py --symbols AAPL,MSFT,TSLA
 ```
 
+安卓上一条命令直接跑（可复制）：
+
+```bash
+pkg update -y && pkg install -y python git && git clone https://github.com/Nolan-Chen/hello-world.git && cd hello-world && python stock_fetch.py --symbols AAPL,MSFT,0700.HK,600519.SS
+```
+
 也可以换成你关心的代码，例如：
 
 ```bash
@@ -36,3 +42,10 @@ python stock_fetch.py --symbols 0700.HK,600519.SS,000001.SZ
 - 代码 / 名称 / 当前价 / 涨跌幅 / 货币 / 交易状态
 
 如果网络或代码有问题，会有明确错误信息，退出码非 0。
+
+## 5. 代码格式说明
+
+- 美股：`AAPL`、`MSFT`
+- 港股：`0700.HK`
+- 沪市：`600519.SS`
+- 深市：`000001.SZ`

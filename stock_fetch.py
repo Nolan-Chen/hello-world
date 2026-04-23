@@ -1,29 +1,96 @@
 #!/usr/bin/env python3
 import argparse
 import datetime as dt
-import json
 import sys
-import urllib.parse
 import urllib.request
 
 
-YAHOO_QUOTE_API = "https://query1.finance.yahoo.com/v7/finance/quote"
+TENCENT_QUOTE_API = "https://qt.gtimg.cn/q="
+
+
+def normalize_symbol(symbol: str) -> str:
+    s = symbol.strip().upper()
+    if not s:
+        return s
+
+    if s.endswith(".SS"):
+        return f"sh{s[:-3]}"
+    if s.endswith(".SZ"):
+        return f"sz{s[:-3]}"
+    if s.endswith(".HK"):
+        numeric = "".join(ch for ch in s[:-3] if ch.isdigit())
+        return f"hk{numeric.zfill(5)}"
+
+    # Default US symbols.
+    if s.startswith(("SH", "SZ", "HK", "US")):
+        return s.lower()
+    return f"us{s}"
 
 
 def fetch_quotes(symbols: list[str]) -> list[dict]:
-    params = urllib.parse.urlencode({"symbols": ",".join(symbols)})
-    url = f"{YAHOO_QUOTE_API}?{params}"
+    api_symbols = [normalize_symbol(s) for s in symbols]
+    url = f"{TENCENT_QUOTE_API}{','.join(api_symbols)}"
     req = urllib.request.Request(
         url=url,
         headers={
             "User-Agent": "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36",
-            "Accept": "application/json",
+            "Referer": "https://gu.qq.com/",
         },
         method="GET",
     )
     with urllib.request.urlopen(req, timeout=15) as resp:
-        payload = json.loads(resp.read().decode("utf-8"))
-    return payload.get("quoteResponse", {}).get("result", [])
+        raw = resp.read().decode("gbk", errors="replace")
+
+    results: list[dict] = []
+    for line in raw.split(";"):
+        line = line.strip()
+        if not line or "=" not in line:
+            continue
+        left, right = line.split("=", 1)
+        symbol = left.replace("v_", "", 1)
+        quote_str = right.strip().strip('"')
+        if not quote_str:
+            continue
+        parts = quote_str.split("~")
+        if len(parts) < 4:
+            continue
+
+        name = parts[1] if len(parts) > 1 else "-"
+        last_price_text = parts[3] if len(parts) > 3 else ""
+        prev_close_text = parts[4] if len(parts) > 4 else ""
+        timestamp = parts[30] if len(parts) > 30 else "-"
+        currency = "-"
+        for idx in (35, 75, 82):
+            if len(parts) > idx and parts[idx].isalpha():
+                currency = parts[idx]
+                break
+
+        try:
+            price = float(last_price_text)
+        except (TypeError, ValueError):
+            price = None
+
+        try:
+            prev_close = float(prev_close_text)
+        except (TypeError, ValueError):
+            prev_close = None
+
+        change_pct = None
+        if price is not None and prev_close not in (None, 0):
+            change_pct = ((price - prev_close) / prev_close) * 100
+
+        results.append(
+            {
+                "symbol": symbol.upper(),
+                "shortName": name,
+                "regularMarketPrice": price,
+                "regularMarketChangePercent": change_pct,
+                "currency": currency,
+                "marketState": timestamp,
+            }
+        )
+
+    return results
 
 
 def pretty_print_quotes(quotes: list[dict]) -> None:
@@ -52,7 +119,7 @@ def pretty_print_quotes(quotes: list[dict]) -> None:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="获取股票实时行情（Yahoo Finance）")
+    parser = argparse.ArgumentParser(description="获取股票实时行情（腾讯行情接口）")
     parser.add_argument(
         "--symbols",
         default="AAPL,MSFT,TSLA",

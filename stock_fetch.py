@@ -3,6 +3,7 @@ import argparse
 import csv
 import datetime as dt
 import json
+import time
 import sys
 import urllib.parse
 import urllib.request
@@ -10,6 +11,37 @@ import urllib.request
 
 TENCENT_QUOTE_API = "https://qt.gtimg.cn/q="
 EASTMONEY_LIST_API = "https://push2.eastmoney.com/api/qt/clist/get"
+EASTMONEY_HOSTS = [
+    "https://push2.eastmoney.com",
+    "https://81.push2.eastmoney.com",
+    "https://82.push2.eastmoney.com",
+]
+
+
+def fetch_url_text(
+    url: str,
+    *,
+    headers: dict[str, str],
+    timeout: int,
+    encoding: str,
+    alt_urls: list[str] | None = None,
+    retries: int = 3,
+    retry_backoff_sec: float = 1.5,
+) -> str:
+    urls = [url] + (alt_urls or [])
+    last_exc: Exception | None = None
+    for attempt in range(1, retries + 1):
+        for current_url in urls:
+            try:
+                req = urllib.request.Request(current_url, headers=headers, method="GET")
+                with urllib.request.urlopen(req, timeout=timeout) as resp:
+                    return resp.read().decode(encoding, errors="replace")
+            except Exception as exc:  # network/transient failures
+                last_exc = exc
+        if attempt < retries:
+            time.sleep(retry_backoff_sec * attempt)
+    assert last_exc is not None
+    raise last_exc
 
 
 def normalize_symbol(symbol: str) -> str:
@@ -101,20 +133,30 @@ def parse_tencent_payload(raw: str) -> list[dict]:
 
 
 def fetch_quotes_by_api_symbols(api_symbols: list[str], batch_size: int) -> list[dict]:
+    def fetch_chunk(chunk: list[str]) -> list[dict]:
+        url = f"{TENCENT_QUOTE_API}{','.join(chunk)}"
+        try:
+            raw = fetch_url_text(
+                url,
+                headers={
+                    "User-Agent": "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36",
+                    "Referer": "https://gu.qq.com/",
+                },
+                timeout=20,
+                encoding="gbk",
+                retries=5,
+                retry_backoff_sec=1.2,
+            )
+            return parse_tencent_payload(raw)
+        except Exception:
+            if len(chunk) == 1:
+                return []
+            mid = len(chunk) // 2
+            return fetch_chunk(chunk[:mid]) + fetch_chunk(chunk[mid:])
+
     all_results: list[dict] = []
     for chunk in split_chunks(api_symbols, batch_size):
-        url = f"{TENCENT_QUOTE_API}{','.join(chunk)}"
-        req = urllib.request.Request(
-            url=url,
-            headers={
-                "User-Agent": "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36",
-                "Referer": "https://gu.qq.com/",
-            },
-            method="GET",
-        )
-        with urllib.request.urlopen(req, timeout=20) as resp:
-            raw = resp.read().decode("gbk", errors="replace")
-        all_results.extend(parse_tencent_payload(raw))
+        all_results.extend(fetch_chunk(chunk))
     return all_results
 
 
@@ -135,6 +177,7 @@ def fetch_all_a_share_meta(include_bj: bool) -> list[dict]:
     page = 1
     page_size = 500
     metas: list[dict] = []
+    seen_symbols: set[str] = set()
     total = None
 
     while total is None or len(metas) < total:
@@ -149,10 +192,22 @@ def fetch_all_a_share_meta(include_bj: bool) -> list[dict]:
             "fs": fs,
             "fields": "f12,f14",
         }
-        url = f"{EASTMONEY_LIST_API}?{urllib.parse.urlencode(params)}"
-        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-        with urllib.request.urlopen(req, timeout=20) as resp:
-            payload = json.loads(resp.read().decode("utf-8"))
+        query = urllib.parse.urlencode(params)
+        urls = [f"{host}/api/qt/clist/get?{query}" for host in EASTMONEY_HOSTS]
+        payload = json.loads(
+            fetch_url_text(
+                urls[0],
+                alt_urls=urls[1:],
+                headers={
+                    "User-Agent": "Mozilla/5.0",
+                    "Referer": "https://quote.eastmoney.com/",
+                },
+                timeout=30,
+                encoding="utf-8",
+                retries=6,
+                retry_backoff_sec=1.2,
+            )
+        )
 
         data = payload.get("data") or {}
         if total is None:
@@ -168,6 +223,9 @@ def fetch_all_a_share_meta(include_bj: bool) -> list[dict]:
             if not converted:
                 continue
             api_symbol, display_symbol = converted
+            if api_symbol in seen_symbols:
+                continue
+            seen_symbols.add(api_symbol)
             metas.append(
                 {
                     "apiSymbol": api_symbol,
@@ -299,6 +357,9 @@ def main() -> int:
                 if quote.get("shortName") in ("", "-", None):
                     quote["shortName"] = meta["shortName"]
                 quotes.append(quote)
+            missing = len(metas) - len(quotes)
+            if missing > 0:
+                print(f"提示: 有 {missing} 只股票暂未返回行情。")
         else:
             symbols = [s.strip().upper() for s in args.symbols.split(",") if s.strip()]
             if not symbols:

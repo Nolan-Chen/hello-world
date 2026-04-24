@@ -20,16 +20,16 @@ pkg install -y python git
 ```bash
 git clone https://github.com/Nolan-Chen/hello-world.git
 cd hello-world
-python stock_fetch.py --symbols AAPL,MSFT,TSLA
+python stock_fetch.py
 ```
 
-安卓上一条命令直接跑（可复制）：
+安卓上一条命令直接跑（可复制，默认获取全市场 A 股）：
 
 ```bash
-pkg update -y && pkg install -y python git && git clone https://github.com/Nolan-Chen/hello-world.git && cd hello-world && python stock_fetch.py --symbols AAPL,MSFT,0700.HK,600519.SS
+pkg update -y && pkg install -y python git && git clone https://github.com/Nolan-Chen/hello-world.git && cd hello-world && python stock_fetch.py
 ```
 
-也可以换成你关心的代码，例如：
+如需按自定义代码抓取（例如美股/港股/A股混合）：
 
 ```bash
 python stock_fetch.py --symbols 0700.HK,600519.SS,000001.SZ

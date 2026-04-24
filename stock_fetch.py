@@ -412,7 +412,7 @@ def pretty_print_quotes(quotes: list[dict], limit: int = 0) -> None:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="获取股票实时行情（腾讯行情接口）")
+    parser = argparse.ArgumentParser(description="获取股票实时行情（默认全市场 A 股）")
     parser.add_argument(
         "--symbols",
         default="AAPL,MSFT,TSLA",
@@ -457,7 +457,9 @@ def main() -> int:
         return 2
 
     try:
-        if args.all_a_share:
+        run_all_a_share = args.all_a_share or args.symbols.strip() == "AAPL,MSFT,TSLA"
+
+        if run_all_a_share:
             print("正在拉取全市场 A 股行情...")
             quotes = fetch_all_a_share_quotes(include_bj=args.include_bj)
             if not quotes:
